@@ -966,7 +966,8 @@
       drawHierarchyInKeyWindow: Bool,
       traits: UITraitCollection,
       view: UIView,
-      viewController: UIViewController
+      viewController: UIViewController,
+      wait: TimeInterval? = nil
     )
       -> Async<UIImage>
     {
@@ -981,26 +982,36 @@
       // NB: Avoid safe area influence.
       if config.safeArea == .zero { view.frame.origin = .init(x: offscreen, y: offscreen) }
 
-      return
-        (view.snapshot
-        ?? Async { callback in
-          addImagesForRenderedViews(view).sequence().run { views in
-            callback(
-              renderer(bounds: view.bounds, for: traits).image { ctx in
-                if drawHierarchyInKeyWindow {
-                  view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
-                } else {
-                  view.layer.render(in: ctx.cgContext)
+      return Async<UIImage> { callback in
+        let performSnapshot: ((@escaping (UIImage) -> Void) -> Void) = { callback in
+          (view.snapshot ?? Async { callback in
+            addImagesForRenderedViews(view).sequence().run { views in
+              callback(
+                renderer(bounds: view.bounds, for: traits).image { ctx in
+                  if drawHierarchyInKeyWindow {
+                    view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
+                  } else {
+                    view.layer.render(in: ctx.cgContext)
+                  }
                 }
-              }
-            )
-            views.forEach { $0.removeFromSuperview() }
-            view.frame = initialFrame
-          }
-        }).map {
-          dispose()
-          return $0
+              )
+              views.forEach { $0.removeFromSuperview() }
+              view.frame = initialFrame
+            }
+          }).run(callback)
         }
+        
+        if let wait {
+          DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+            performSnapshot(callback)
+          }
+        } else {
+          performSnapshot(callback)
+        }
+      }.map {
+        dispose()
+        return $0
+      }
     }
 
     private let offscreen: CGFloat = 10_000
